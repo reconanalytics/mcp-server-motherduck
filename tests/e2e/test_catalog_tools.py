@@ -265,3 +265,50 @@ async def test_catalog_tools_always_readonly(memory_client):
             if hasattr(tool, "annotations") and tool.annotations:
                 assert getattr(tool.annotations, "readOnlyHint", None) is True
                 assert getattr(tool.annotations, "destructiveHint", None) is False
+
+
+@pytest.mark.asyncio
+async def test_list_tables_special_chars_in_schema(memory_client):
+    """list_tables quotes schema/table names that need quoting."""
+    # Create a schema with a single quote in the name
+    await memory_client.call_tool_mcp(
+        "execute_query", {"sql": 'CREATE SCHEMA "test\'s_schema"'}
+    )
+    await memory_client.call_tool_mcp(
+        "execute_query",
+        {"sql": 'CREATE TABLE "test\'s_schema"."my_table" (id INTEGER)'},
+    )
+
+    result = await memory_client.call_tool_mcp(
+        "list_tables", {"database": "memory", "schema": "test's_schema"}
+    )
+    assert result.isError is False
+
+    data = parse_json_result(result)
+    assert data["success"] is True
+
+    # Schema name needs quoting (contains single quote), table name does not
+    assert data["tables"][0]["schema"] == "\"test's_schema\""
+    assert data["tables"][0]["name"] == "my_table"
+
+
+@pytest.mark.asyncio
+async def test_list_columns_special_chars_in_table(memory_client):
+    """list_columns quotes column names that need quoting."""
+    await memory_client.call_tool_mcp(
+        "execute_query",
+        {"sql": 'CREATE TABLE "it\'s a table" (id INTEGER, "E00188 How satisfied?" VARCHAR)'},
+    )
+
+    result = await memory_client.call_tool_mcp(
+        "list_columns", {"database": "memory", "table": "it's a table"}
+    )
+    assert result.isError is False
+
+    data = parse_json_result(result)
+    assert data["success"] is True
+    assert data["columnCount"] == 2
+    col_names = [c["name"] for c in data["columns"]]
+    # Simple name stays bare, complex name gets quoted
+    assert "id" in col_names
+    assert '"E00188 How satisfied?"' in col_names

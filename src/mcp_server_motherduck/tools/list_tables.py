@@ -32,10 +32,19 @@ def list_tables(
             _, _, db_rows = db_client.execute_raw("SELECT current_database()")
             database = db_rows[0][0]
 
-        # Build schema filter
-        schema_filter = f"AND schema_name = '{schema}'" if schema else ""
+        # Build query with parameterized values
+        params: list[Any] = [database]
+
+        if schema:
+            schema_filter = "AND schema_name = ?"
+            params.append(schema)
+        else:
+            schema_filter = ""
 
         # Query tables and views using DuckDB system functions
+        # Parameters are positional, so database param appears twice
+        # (once for each half of the UNION ALL)
+        all_params = params + params
         sql = f"""
             SELECT
                 schema_name as schema,
@@ -43,7 +52,7 @@ def list_tables(
                 'table' as type,
                 comment
             FROM duckdb_tables()
-            WHERE database_name = '{database}' {schema_filter}
+            WHERE database_name = ? {schema_filter}
 
             UNION ALL
 
@@ -53,18 +62,18 @@ def list_tables(
                 'view' as type,
                 comment
             FROM duckdb_views()
-            WHERE database_name = '{database}' {schema_filter}
+            WHERE database_name = ? {schema_filter}
 
             ORDER BY schema, type, name
         """
 
-        _, _, rows = db_client.execute_raw(sql)
+        _, _, rows = db_client.execute_raw(sql, all_params)
 
-        # Transform results
+        # Transform results — names are SQL-ready (quoted only when needed)
         tables = [
             {
-                "schema": row[0],
-                "name": row[1],
+                "schema": db_client.maybe_quote_identifier(row[0]),
+                "name": db_client.maybe_quote_identifier(row[1]),
                 "type": row[2],
                 "comment": row[3] if row[3] else None,
             }
