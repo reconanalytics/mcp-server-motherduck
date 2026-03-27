@@ -39,26 +39,26 @@ def list_columns(
             _, _, schema_rows = db_client.execute_raw("SELECT current_schema()")
             schema = schema_rows[0][0]
 
-        # Query columns using DuckDB system function
-        sql = f"""
+        # Query columns using DuckDB system function with parameterized values
+        sql = """
             SELECT
                 column_name as name,
                 data_type as type,
                 is_nullable = 'YES' as nullable,
                 comment
             FROM duckdb_columns()
-            WHERE database_name = '{database}'
-              AND schema_name = '{schema}'
-              AND table_name = '{table}'
+            WHERE database_name = ?
+              AND schema_name = ?
+              AND table_name = ?
             ORDER BY column_index
         """
 
-        _, _, rows = db_client.execute_raw(sql)
+        _, _, rows = db_client.execute_raw(sql, [database, schema, table])
 
-        # Transform results
+        # Transform results — name is SQL-ready (quoted only when needed)
         columns = [
             {
-                "name": row[0],
+                "name": db_client.maybe_quote_identifier(row[0]),
                 "type": row[1],
                 "nullable": bool(row[2]),
                 "comment": row[3] if row[3] else None,
@@ -69,13 +69,16 @@ def list_columns(
         # Determine if it's a view or table
         object_type = "table"
         try:
-            _, _, view_rows = db_client.execute_raw(f"""
+            _, _, view_rows = db_client.execute_raw(
+                """
                 SELECT 1 FROM duckdb_views()
-                WHERE database_name = '{database}'
-                  AND schema_name = '{schema}'
-                  AND view_name = '{table}'
+                WHERE database_name = ?
+                  AND schema_name = ?
+                  AND view_name = ?
                 LIMIT 1
-            """)
+                """,
+                [database, schema, table],
+            )
             if view_rows:
                 object_type = "view"
         except Exception:

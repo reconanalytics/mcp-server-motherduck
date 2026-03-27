@@ -5,6 +5,9 @@ import re
 import threading
 from typing import Any, Literal, Optional
 
+# Pattern for names that are safe to use as bare SQL identifiers.
+_BARE_IDENTIFIER_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+
 import duckdb
 
 from .configs import SERVER_VERSION
@@ -66,6 +69,7 @@ class DatabaseClient:
 
         self.conn = None
         self._conn_initialized = False
+        self._reserved_keywords: set[str] | None = None
 
     def _ensure_connected(self) -> None:
         """Lazily initialize the database connection on first use."""
@@ -389,10 +393,16 @@ class DatabaseClient:
                 "errorType": type(e).__name__,
             }
 
-    def execute_raw(self, query: str) -> tuple[list[str], list[str], list[list[Any]]]:
+    def execute_raw(
+        self, query: str, params: list[Any] | None = None
+    ) -> tuple[list[str], list[str], list[list[Any]]]:
         """
         Execute a query and return raw results (columns, types, rows).
         Used by catalog tools that need custom result formatting.
+
+        Args:
+            query: SQL query string. May contain ``?`` placeholders.
+            params: Optional list of parameter values to bind to the placeholders.
         """
         self._ensure_connected()
         if self.conn is None:
@@ -405,7 +415,7 @@ class DatabaseClient:
             conn = self.conn
 
         try:
-            q = conn.execute(query)
+            q = conn.execute(query, params or [])
             columns = [d[0] for d in q.description] if q.description else []
             column_types = [str(d[1]) for d in q.description] if q.description else []
             rows = [list(row) for row in q.fetchall()]
@@ -413,6 +423,22 @@ class DatabaseClient:
         finally:
             if self.conn is None:
                 conn.close()
+
+    def _get_reserved_keywords(self) -> set[str]:
+        """Return the set of DuckDB keywords that require quoting, cached after first call."""
+        if self._reserved_keywords is None:
+            _, _, rows = self.execute_raw(
+                "SELECT keyword_name FROM duckdb_keywords() "
+                "WHERE keyword_category IN ('reserved', 'type_function')"
+            )
+            self._reserved_keywords = {row[0] for row in rows}
+        return self._reserved_keywords
+
+    def maybe_quote_identifier(self, name: str) -> str:
+        """Return *name* ready to use in SQL — quoted only if necessary."""
+        if _BARE_IDENTIFIER_RE.match(name) and name.lower() not in self._get_reserved_keywords():
+            return name
+        return '"' + name.replace('"', '""') + '"'
 
     def switch_database(self, path: str, read_only: bool = True) -> None:
         """
